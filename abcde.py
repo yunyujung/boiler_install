@@ -1,104 +1,92 @@
-# -*- coding: utf-8 -*-
-# 경동나비엔 가스보일러 설치, 교체시 제출서류(현장사진)
-# - 주소 입력을 "기본 주소" + "상세 주소"로 분리
-# - PDF에는 두 칸을 합쳐서 설치장소(주소)로 표기
-# - 나머지는 동일 (2x2로 4장/페이지, 초과 시 자동으로 다음 페이지)
+import os
+os.system("pip install streamlit reportlab pillow")
 
-import io, re, unicodedata, os
-from typing import List, Tuple
+# -*- coding: utf-8 -*-
+# 가스보일러 설치/교체 시 제출서류(현장사진) - 모바일 최적화 (2x2 PDF, 페이지네이션)
+
+import io, re, unicodedata, uuid, os
+from typing import List, Tuple, Optional
 import streamlit as st
 from PIL import Image, ImageOps
 
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Table,
-    TableStyle,
-    Spacer,
-    Image as RLImage,
-    PageBreak,
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, Image as RLImage, PageBreak
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-APP_TITLE = "경동나비엔 가스보일러 설치, 교체시 제출서류(현장사진)"
-st.set_page_config(page_title=APP_TITLE, layout="wide")
+# ───────────────────────────────
+# 페이지/헤더
+# ───────────────────────────────
+st.set_page_config(page_title="가스보일러 설치/교체 시 제출서류(현장사진)", layout="wide")
+st.markdown("""
+    <h4 style='text-align:center; margin: 0.3rem 0; font-size: 1.1rem;'>
+        가스보일러 설치/교체 시 제출서류(현장사진)
+    </h4>
+    <hr style='border:1px solid #ddd; margin:0.5rem 0 1rem 0;'>
+""", unsafe_allow_html=True)
 
 # ───────────────────────────────
 # 세션 초기화
 # ───────────────────────────────
-DEFAULT_ITEMS = [
-    "전면사진",
+DEFAULT_OPTIONS = [
+    "가스보일러 전면사진",
     "배기통(실내)",
     "배기통(실외)",
     "일산화탄소 경보기",
     "시공표지판",
     "명판",
-    "플랙시블호스/ 가스밸브 사진",
-    "계량기 사진",
+    "플렉시블호스/가스밸브 사진",
+    "직접입력",
 ]
 
 if "photos" not in st.session_state:
-    st.session_state.photos = [{"label": label, "img": None} for label in DEFAULT_ITEMS]
-
+    st.session_state.photos = [{
+        "id": str(uuid.uuid4()),
+        "choice": DEFAULT_OPTIONS[0],
+        "custom": "",
+        "checked": False,
+        "img": None
+    }]
 if "pdf_bytes" not in st.session_state:
     st.session_state.pdf_bytes = None
+if "add_pending" not in st.session_state:
+    st.session_state.add_pending = False
 
-# 주소 2단 입력 칸 세션 값 초기화
-if "install_addr_main" not in st.session_state:
-    st.session_state.install_addr_main = ""
-if "install_addr_detail" not in st.session_state:
-    st.session_state.install_addr_detail = ""
-
+if st.session_state.add_pending:
+    st.session_state.photos.append({
+        "id": str(uuid.uuid4()),
+        "choice": DEFAULT_OPTIONS[0],
+        "custom": "",
+        "checked": False,
+        "img": None
+    })
+    st.session_state.add_pending = False
 
 # ───────────────────────────────
-# 폰트 등록 (한글 PDF용)
+# 폰트 등록
 # ───────────────────────────────
 def try_register_font():
-    candidates = [
+    for name, path in [
         ("NanumGothic", "NanumGothic.ttf"),
         ("MalgunGothic", "C:\\Windows\\Fonts\\malgun.ttf"),
         ("MalgunGothic", "C:/Windows/Fonts/malgun.ttf"),
-    ]
-    for name, path in candidates:
-        try:
-            if os.path.exists(path):
+    ]:
+        if os.path.exists(path):
+            try:
                 pdfmetrics.registerFont(TTFont(name, path))
-                return name, True
-        except Exception:
-            pass
-    return "Helvetica", False
+                return name
+            except Exception:
+                pass
+    return "Helvetica"
 
-BASE_FONT, _ = try_register_font()
+BASE_FONT = try_register_font()
 ss = getSampleStyleSheet()
 styles = {
-    "title": ParagraphStyle(
-        name="title",
-        parent=ss["Heading1"],
-        fontName=BASE_FONT,
-        fontSize=18,
-        leading=22,
-        alignment=1,
-        spaceAfter=8,
-    ),
-    "cell": ParagraphStyle(
-        name="cell",
-        parent=ss["Normal"],
-        fontName=BASE_FONT,
-        fontSize=10,
-        leading=13,
-    ),
-    "small_center": ParagraphStyle(
-        name="small_center",
-        parent=ss["Normal"],
-        fontName=BASE_FONT,
-        fontSize=9,
-        leading=11,
-        alignment=1,
-    ),
+    "title": ParagraphStyle(name="title", parent=ss["Heading1"], fontName=BASE_FONT, fontSize=16, alignment=1),
+    "cell": ParagraphStyle(name="cell", parent=ss["Normal"], fontName=BASE_FONT, fontSize=9),
+    "small_center": ParagraphStyle(name="small_center", parent=ss["Normal"], fontName=BASE_FONT, fontSize=9, alignment=1),
 }
 
 # ───────────────────────────────
@@ -106,7 +94,7 @@ styles = {
 # ───────────────────────────────
 def sanitize_filename(name: str) -> str:
     name = unicodedata.normalize("NFKD", name)
-    return re.sub(r'[\\/:*?"<>|]', "_", name).strip().strip(".") or "output"
+    return re.sub(r"[\\/:*?\"<>|]", "_", name).strip().strip(".") or "output"
 
 def normalize_orientation(img: Image.Image) -> Image.Image:
     try:
@@ -115,265 +103,176 @@ def normalize_orientation(img: Image.Image) -> Image.Image:
         pass
     return img.convert("RGB")
 
-def pad_to_ratio(img: Image.Image, target_ratio: float = 4/3) -> Image.Image:
-    w, h = img.size
-    cur_ratio = w / h
-    if abs(cur_ratio - target_ratio) < 1e-3:
-        return img
-
-    if cur_ratio > target_ratio:
-        # 가로가 더 긴 경우 -> 세로 캔버스 늘림
-        new_h = int(round(w / target_ratio))
-        new_w = w
-    else:
-        # 세로가 더 긴 경우 -> 가로 캔버스 늘림
-        new_w = int(round(h * target_ratio))
-        new_h = h
-
-    from PIL import Image as PILImage
-    canvas = PILImage.new("RGB", (new_w, new_h), (255, 255, 255))
-    canvas.paste(img, ((new_w - w)//2, (new_h - h)//2))
-    return canvas
-
 def _pil_to_bytesio(img: Image.Image, quality=85) -> io.BytesIO:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, optimize=True)
     buf.seek(0)
     return buf
 
-
 # ───────────────────────────────
-# PDF 생성 (2x2 레이아웃, 여러 페이지)
-#   header_title: 문서 제목
-#   addr_full: install_addr_main + " " + install_addr_detail
-#   photos: [(label, img), ...]
-#
-# 첫 페이지:
-#   - 제목
-#   - 설치장소(주소) 표
-#   - 첫 4장(2x2)
-# 이후 페이지는
-#   - 나머지 4장씩(2x2)
+# PDF 생성 (2x2 그리드, 페이지네이션)
 # ───────────────────────────────
-def build_pdf(header_title: str,
-              addr_full: str,
-              photos: List[Tuple[str, Image.Image]]) -> bytes:
-
+def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Image.Image]]]) -> bytes:
+    """
+    items: List of (label, PIL Image)
+    - 한 페이지에 2x2(4장). 4장을 넘으면 자동으로 다음 페이지로 넘어감.
+    - 이미지 캡션은 각 셀 하단에 표시.
+    """
     buf = io.BytesIO()
     PAGE_W, PAGE_H = A4
-    MARGIN = 20
+    LEFT, RIGHT, TOP, BOTTOM = 20, 20, 20, 20
+    content_w = PAGE_W - LEFT - RIGHT
 
     doc = SimpleDocTemplate(
-        buf,
-        pagesize=A4,
-        topMargin=MARGIN,
-        bottomMargin=MARGIN,
-        leftMargin=MARGIN,
-        rightMargin=MARGIN,
-        title=header_title,
+        buf, pagesize=A4, title=doc_title,
+        leftMargin=LEFT, rightMargin=RIGHT, topMargin=TOP, bottomMargin=BOTTOM
     )
 
     story = []
-
     # 제목
-    story.append(Paragraph(header_title, styles["title"]))
-    story.append(Spacer(1, 4))
+    story.append(Paragraph(doc_title, styles["title"]))
+    story.append(Spacer(1, 8))
 
-    # 주소 표 (1행)
-    meta_tbl = Table(
-        [
-            [
-                Paragraph("설치장소(주소)", styles["cell"]),
-                Paragraph(addr_full.strip() or "-", styles["cell"]),
-            ]
-        ],
-        colWidths=[110, PAGE_W - 2*MARGIN - 110],
+    # 현장 주소 표
+    meta = Table(
+        [[Paragraph("현장 주소", styles["cell"]), Paragraph(site_addr or "-", styles["cell"])]],
+        colWidths=[70, content_w - 70]
     )
-    meta_tbl.setStyle(
-        TableStyle(
-            [
-                ("BOX", (0, 0), (-1, -1), 0.9, colors.black),
-                ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ]
-        )
-    )
-    story.append(meta_tbl)
+    meta.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                              ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                              ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                              ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                              ("TOPPADDING", (0, 0), (-1, -1), 4),
+                              ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+    story.append(meta)
     story.append(Spacer(1, 10))
 
-    # 2x2 레이아웃 설정
-    usable_width = PAGE_W - 2 * MARGIN
-    col_width = usable_width / 2.0  # 2열
+    # 2열 너비, 이미지 박스 크기
+    cols = 2
+    col_w = content_w / cols  # 각 셀 너비
+    # 이미지 높이는 넉넉히 키워서 '큰 버전'으로 (캡션 포함 세로 공간 고려)
+    # 페이지 내에서 2행이므로 이미지 자체는 약 220~260pt 정도 권장
+    img_w = col_w - 10
+    img_h = 240  # 크게 보이도록 고정 높이
 
-    CELL_TOTAL_H = 320        # 셀 높이
-    CAPTION_H = 28            # 캡션 영역
-    IMAGE_MAX_H = CELL_TOTAL_H - CAPTION_H - 8
-    IMAGE_MAX_W = col_width - 8
+    # 셀 생성 함수
+    def _make_cell(label: str, img: Image.Image):
+        bio = _pil_to_bytesio(normalize_orientation(img))
+        rl_img = RLImage(bio, width=img_w, height=img_h)  # 고정 박스에 맞춰 확대/축소
+        cell = Table(
+            [[rl_img], [Paragraph(label, styles["small_center"])]],
+            colWidths=[col_w - 10]
+        )
+        cell.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        return cell
 
-    # 4장씩 끊기
-    chunks = [photos[i:i+4] for i in range(0, len(photos), 4)]
+    # 4장씩 끊어서 페이지별 테이블 생성
+    page_cells = []
+    for label, img in items:
+        page_cells.append(_make_cell(label, img))
 
-    for ci, chunk in enumerate(chunks):
-        # 첫 chunk는 이미 제목/주소 뒤에서 시작
-        # 두 번째 chunk부터는 페이지 나누기 + (주소표 없이 바로 사진)
-        if ci > 0:
+    # 2x2로 재배열
+    def chunk(lst, n):
+        for i in range(0, len(lst), n):
+            yield lst[i:i+n]
+
+    # 4개(2x2)씩 묶음
+    for i, four in enumerate(chunk(page_cells, 4)):
+        # 빈 칸 채우기 (마지막 페이지에서 4개 미만일 경우)
+        while len(four) < 4:
+            # 빈 더미 셀 (테두리/여백만)
+            empty = Table([[" "]], colWidths=[col_w - 10])
+            empty.setStyle(TableStyle([("TOPPADDING", (0, 0), (-1, -1), 100)]))
+            four.append(empty)
+        rows = [four[0:2], four[2:4]]
+        grid = Table(rows, colWidths=[col_w, col_w])
+        grid.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(grid)
+        if (i + 1) * 4 < len(page_cells):
             story.append(PageBreak())
-
-        # 셀 테이블들 준비
-        cell_tables = []
-        for (label, pil_img) in chunk:
-            fixed = normalize_orientation(pil_img)
-            fixed = pad_to_ratio(fixed, target_ratio=4/3)
-
-            bio = _pil_to_bytesio(fixed)
-            rl_img = RLImage(bio, width=IMAGE_MAX_W, height=IMAGE_MAX_H)
-
-            cell_tbl = Table(
-                [
-                    [rl_img],
-                    [Paragraph(label, styles["small_center"])],
-                ],
-                colWidths=[col_width],
-                rowHeights=[CELL_TOTAL_H - CAPTION_H, CAPTION_H],
-            )
-            cell_tbl.setStyle(
-                TableStyle(
-                    [
-                        ("BOX", (0, 0), (-1, -1), 0.4, colors.grey),
-                        ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
-                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                    ]
-                )
-            )
-            cell_tables.append(cell_tbl)
-
-        # 만약 마지막 페이지가 1~3장만 있다면 빈 칸으로 채워서 레이아웃 유지
-        while len(cell_tables) < 4:
-            empty_tbl = Table(
-                [
-                    [Paragraph("", styles["small_center"])],
-                    [Paragraph("", styles["small_center"])],
-                ],
-                colWidths=[col_width],
-                rowHeights=[CELL_TOTAL_H - CAPTION_H, CAPTION_H],
-            )
-            empty_tbl.setStyle(
-                TableStyle(
-                    [
-                        ("BOX", (0, 0), (-1, -1), 0.4, colors.grey),
-                        ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
-                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                    ]
-                )
-            )
-            cell_tables.append(empty_tbl)
-
-        # 2x2로 묶어서 큰 표 하나 만들기
-        grid_tbl = Table(
-            [
-                [cell_tables[0], cell_tables[1]],
-                [cell_tables[2], cell_tables[3]],
-            ],
-            colWidths=[col_width, col_width],
-            rowHeights=[CELL_TOTAL_H, CELL_TOTAL_H],
-        )
-        grid_tbl.setStyle(
-            TableStyle(
-                [
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ]
-            )
-        )
-
-        story.append(grid_tbl)
 
     doc.build(story)
     return buf.getvalue()
 
-
 # ───────────────────────────────
-# 화면 UI
+# 입력 영역
 # ───────────────────────────────
-st.markdown(f"### {APP_TITLE}")
-
-col_main, col_detail = st.columns(2)
-with col_main:
-    st.session_state.install_addr_main = st.text_input(
-        "주소 (기본)",
-        value=st.session_state.install_addr_main,
-        placeholder="예: 서울특별시 강서구 마곡동 123-4",
-        key="install_addr_main_input",
-    )
-with col_detail:
-    st.session_state.install_addr_detail = st.text_input(
-        "상세 주소",
-        value=st.session_state.install_addr_detail,
-        placeholder="예: 302동 1203호 보일러실",
-        key="install_addr_detail_input",
-    )
-
+site_addr = st.text_input("현장 주소", "")
 st.divider()
-st.markdown("#### 현장사진 업로드 (각 항목별로 사진을 등록하세요)")
 
-for idx, p in enumerate(st.session_state.photos):
-    block = st.container(border=True)
-    with block:
-        st.markdown(f"**{p['label']}**")
-        upload = st.file_uploader(
-            "사진 등록",
-            type=["jpg", "jpeg", "png"],
-            key=f"up_{idx}",
-        )
-        if upload:
-            from PIL import Image as PILImage
-            original = PILImage.open(upload)
-            st.session_state.photos[idx]["img"] = normalize_orientation(original)
-
-        if st.session_state.photos[idx]["img"]:
-            st.image(st.session_state.photos[idx]["img"], use_container_width=True)
+# ───────────────────────────────
+# 한 줄 구성 UI (체크박스 | 항목 | 직접입력/사진)
+# ───────────────────────────────
+for p in st.session_state.photos:
+    with st.container(border=True):
+        col1, col2, col3 = st.columns([0.6, 2, 2])
+        with col1:
+            p["checked"] = st.checkbox("", key=f"chk_{p['id']}", value=p.get("checked", False))
+        with col2:
+            current_choice = p.get("choice", DEFAULT_OPTIONS[0])
+            if current_choice not in DEFAULT_OPTIONS:
+                current_choice = DEFAULT_OPTIONS[0]
+            p["choice"] = st.selectbox("항목", DEFAULT_OPTIONS, key=f"choice_{p['id']}",
+                                       index=DEFAULT_OPTIONS.index(current_choice), label_visibility="collapsed")
+        with col3:
+            if p["choice"] == "직접입력":
+                p["custom"] = st.text_input("직접입력", p.get("custom", ""), key=f"custom_{p['id']}",
+                                            label_visibility="collapsed", placeholder="항목 직접 입력")
+            upload = st.file_uploader("사진", type=["jpg","jpeg","png"], key=f"up_{p['id']}",
+                                      label_visibility="collapsed")
+            if upload:
+                p["img"] = normalize_orientation(Image.open(upload))
+            if p["img"]:
+                st.image(p["img"], use_container_width=True, caption=p["custom"] or p["choice"], clamp=True)
 
 st.divider()
 
-left_btn, right_dummy = st.columns([1, 3])
-download_area = st.empty()
-
-with left_btn:
-    if st.button("📄 PDF 생성", type="primary", use_container_width=True):
-        # 업로드된 사진만 모아서 (순서는 DEFAULT_ITEMS 순서대로)
-        valid_photos = []
-        for item in st.session_state.photos:
-            if item["img"] is not None:
-                valid_photos.append((item["label"], item["img"]))
-
-        if not valid_photos:
-            st.warning("📸 업로드된 사진이 없습니다.")
+# ───────────────────────────────
+# 버튼 영역
+# ───────────────────────────────
+b1, b2, b3 = st.columns([1,1,2])
+with b1:
+    if st.button("➕ 추가", use_container_width=True):
+        st.session_state.add_pending = True
+        st.rerun()
+with b2:
+    if st.button("🗑 삭제", use_container_width=True):
+        st.session_state.photos = [x for x in st.session_state.photos if not x["checked"]]
+        st.rerun()
+with b3:
+    if st.button("📄 PDF 생성 (2×2)", type="primary", use_container_width=True):
+        valid = []
+        for p in st.session_state.photos:
+            if p.get("img"):
+                label = p["custom"].strip() if (p["choice"] == "직접입력" and p.get("custom")) else p["choice"]
+                valid.append((label, p["img"]))
+        if not valid:
+            st.warning("📸 사진이 등록된 항목이 없습니다.")
         else:
-            full_addr = (
-                st.session_state.get("install_addr_main", "").strip()
-                + " "
-                + st.session_state.get("install_addr_detail", "").strip()
-            ).strip()
-
-            pdf_bytes = build_pdf(
-                APP_TITLE,
-                full_addr,
-                valid_photos
+            st.session_state.pdf_bytes = build_pdf(
+                "가스보일러 설치/교체 시 제출서류(현장사진)",
+                site_addr,
+                valid
             )
-            st.session_state.pdf_bytes = pdf_bytes
+            st.rerun()
 
+# ───────────────────────────────
+# 다운로드
+# ───────────────────────────────
 if st.session_state.pdf_bytes:
-    # 파일명은 기본주소만 사용 (너무 길어지는 것 방지)
-    fname = f"{sanitize_filename(st.session_state.get('install_addr_main',''))}_현장사진제출서류.pdf"
-    with download_area.container():
-        st.success("✅ PDF 생성 완료! 아래 버튼으로 바로 다운로드하세요.")
-        st.download_button(
-            "⬇️ PDF 다운로드",
-            st.session_state.pdf_bytes,
-            file_name=fname,
-            mime="application/pdf",
-            key="dl_pdf",
-            use_container_width=True,
-        )
+    fname = f"{sanitize_filename(site_addr)}_현장사진_2x2.pdf"
+    st.success("✅ PDF 생성 완료! 아래 버튼으로 다운로드하세요.")
+    st.download_button("⬇️ PDF 다운로드", st.session_state.pdf_bytes,
+                       file_name=fname, mime="application/pdf", use_container_width=True)
