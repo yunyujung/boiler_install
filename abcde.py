@@ -1,29 +1,23 @@
-import requests
-
-FONT_PATH = "./NanumGothic.ttf"
-if not os.path.exists(FONT_PATH):
-    url = "https://github.com/naver/nanumfont/releases/download/VER2.5/NanumGothic.ttf"
-    r = requests.get(url)
-    with open(FONT_PATH, "wb") as f:
-        f.write(r.content)
-        
 import os
-os.system("pip install streamlit reportlab pillow")
+os.system("pip install streamlit reportlab pillow openpyxl requests")
 
 # -*- coding: utf-8 -*-
 # 가스보일러 설치/교체 시 제출서류(현장사진) - 모바일 최적화 (2x2 PDF, 페이지네이션)
+# - 한글 폰트 자동 다운로드/임베드 (방법2)
 
 import io, re, unicodedata, uuid, os
 from typing import List, Tuple, Optional
 import streamlit as st
 from PIL import Image, ImageOps
 
+import requests
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, Image as RLImage, PageBreak
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
 # ───────────────────────────────
 # 페이지/헤더
@@ -74,20 +68,55 @@ if st.session_state.add_pending:
     st.session_state.add_pending = False
 
 # ───────────────────────────────
-# 폰트 등록
+# 한글 폰트 자동 다운로드 + 등록
 # ───────────────────────────────
-def try_register_font():
-    for name, path in [
-        ("NanumGothic", "NanumGothic.ttf"),
-        ("MalgunGothic", "C:\\Windows\\Fonts\\malgun.ttf"),
-        ("MalgunGothic", "C:/Windows/Fonts/malgun.ttf"),
-    ]:
-        if os.path.exists(path):
-            try:
-                pdfmetrics.registerFont(TTFont(name, path))
-                return name
-            except Exception:
-                pass
+def ensure_font(path: str) -> str:
+    """path에 폰트가 없으면 다운로드하여 저장하고, 존재하면 그대로 경로 반환"""
+    if os.path.exists(path):
+        return path
+    try:
+        # 네이버 나눔고딕 공식 릴리즈(VER2.5)의 단일 TTF 직접 링크
+        url = "https://github.com/naver/nanumfont/releases/download/VER2.5/NanumGothic.ttf"
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            f.write(r.content)
+        return path
+    except Exception:
+        return ""  # 실패 시 빈 문자열
+
+def try_register_font() -> str:
+    """
+    우선순위:
+    1) 실행 폴더의 NanumGothic.ttf (없으면 자동 다운로드)
+    2) ./fonts/NanumGothic.ttf
+    3) Windows 시스템 맑은고딕
+    4) 실패 시 Helvetica (한글 미지원)
+    """
+    candidates = []
+
+    # 1) 루트 자동 다운로드
+    dl_path = "./NanumGothic.ttf"
+    got = ensure_font(dl_path)
+    if got:
+        candidates.append(("NanumGothic", got))
+
+    # 2) fonts/ 하위
+    if os.path.exists("./fonts/NanumGothic.ttf"):
+        candidates.append(("NanumGothic", "./fonts/NanumGothic.ttf"))
+
+    # 3) 로컬 윈도우 경로(로컬 테스트용)
+    for p in ["C:\\Windows\\Fonts\\malgun.ttf", "C:/Windows/Fonts/malgun.ttf"]:
+        if os.path.exists(p):
+            candidates.append(("MalgunGothic", p))
+
+    for name, path in candidates:
+        try:
+            pdfmetrics.registerFont(TTFont(name, path))
+            registerFontFamily(name, normal=name, bold=name, italic=name, boldItalic=name)
+            return name
+        except Exception:
+            pass
     return "Helvetica"
 
 BASE_FONT = try_register_font()
@@ -97,6 +126,11 @@ styles = {
     "cell": ParagraphStyle(name="cell", parent=ss["Normal"], fontName=BASE_FONT, fontSize=9),
     "small_center": ParagraphStyle(name="small_center", parent=ss["Normal"], fontName=BASE_FONT, fontSize=9, alignment=1),
 }
+
+if BASE_FONT == "Helvetica":
+    st.error("PDF 한글 폰트를 임베드하지 못했습니다. 네트워크 또는 권한 문제일 수 있습니다.")
+else:
+    st.caption(f"PDF 폰트: {BASE_FONT} (임베드됨)")
 
 # ───────────────────────────────
 # 유틸
@@ -147,20 +181,20 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
         [[Paragraph("현장 주소", styles["cell"]), Paragraph(site_addr or "-", styles["cell"])]],
         colWidths=[70, content_w - 70]
     )
-    meta.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.5, colors.black),
-                              ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                              ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                              ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                              ("TOPPADDING", (0, 0), (-1, -1), 4),
-                              ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
+    meta.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
     story.append(meta)
     story.append(Spacer(1, 10))
 
     # 2열 너비, 이미지 박스 크기
     cols = 2
     col_w = content_w / cols  # 각 셀 너비
-    # 이미지 높이는 넉넉히 키워서 '큰 버전'으로 (캡션 포함 세로 공간 고려)
-    # 페이지 내에서 2행이므로 이미지 자체는 약 220~260pt 정도 권장
     img_w = col_w - 10
     img_h = 240  # 크게 보이도록 고정 높이
 
@@ -192,9 +226,7 @@ def build_pdf(doc_title: str, site_addr: str, items: List[Tuple[str, Optional[Im
 
     # 4개(2x2)씩 묶음
     for i, four in enumerate(chunk(page_cells, 4)):
-        # 빈 칸 채우기 (마지막 페이지에서 4개 미만일 경우)
         while len(four) < 4:
-            # 빈 더미 셀 (테두리/여백만)
             empty = Table([[" "]], colWidths=[col_w - 10])
             empty.setStyle(TableStyle([("TOPPADDING", (0, 0), (-1, -1), 100)]))
             four.append(empty)
@@ -285,4 +317,3 @@ if st.session_state.pdf_bytes:
     st.success("✅ PDF 생성 완료! 아래 버튼으로 다운로드하세요.")
     st.download_button("⬇️ PDF 다운로드", st.session_state.pdf_bytes,
                        file_name=fname, mime="application/pdf", use_container_width=True)
-
