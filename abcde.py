@@ -1,9 +1,10 @@
 import os
-os.system("pip install streamlit reportlab pillow openpyxl requests")
+os.system("pip install --disable-pip-version-check -q streamlit reportlab pillow openpyxl requests")
 
 # -*- coding: utf-8 -*-
 # 가스보일러 설치/교체 시 제출서류(현장사진) - 모바일 최적화 (2x2 PDF, 페이지네이션)
-# - 한글 폰트 자동 다운로드/임베드 (방법2)
+# - 한글 폰트 자동 다운로드/임베드 (여러 미러 시도)
+# - 폰트 임베드 실패 시 경고 문구 표시 안함(조용히 Helvetica로 폴백)
 
 import io, re, unicodedata, uuid, os
 from typing import List, Tuple, Optional
@@ -18,6 +19,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
+import reportlab.rl_config as rl_config
 
 # ───────────────────────────────
 # 페이지/헤더
@@ -68,58 +70,73 @@ if st.session_state.add_pending:
     st.session_state.add_pending = False
 
 # ───────────────────────────────
-# 한글 폰트 자동 다운로드 + 등록
+# 한글 폰트 자동 다운로드 + 등록 (무경고 폴백)
 # ───────────────────────────────
+# Streamlit Cloud(linux) 폰트 탐색 경로 보강
+rl_config.TTFSearchPath.extend([
+    ".", "./fonts", "/usr/share/fonts", "/usr/local/share/fonts", "/tmp"
+])
+
+FONT_CANDIDATE_LOCAL = [
+    "./NanumGothic.ttf",
+    "./fonts/NanumGothic.ttf",
+    "C:/Windows/Fonts/malgun.ttf",       # 로컬 테스트용
+    "C:\\Windows\\Fonts\\malgun.ttf",
+]
+
+FONT_MIRRORS = [
+    # 나눔고딕 공식 릴리즈 (GitHub)
+    "https://github.com/naver/nanumfont/releases/download/VER2.5/NanumGothic.ttf",
+    # jsDelivr CDN 미러
+    "https://cdn.jsdelivr.net/gh/naver/nanumfont@VER2.5/NanumGothic.ttf",
+    # Naver 개발자센터(백업,  ttf 경로가 바뀌면 실패할 수 있음)
+    "https://github.com/navermaps/NanumGothic/blob/master/NanumGothic.ttf?raw=1",
+]
+
 def ensure_font(path: str) -> str:
-    """path에 폰트가 없으면 다운로드하여 저장하고, 존재하면 그대로 경로 반환"""
+    """path에 폰트가 있으면 그대로, 없으면 여러 미러에서 다운로드 시도. 실패하면 '' 반환."""
     if os.path.exists(path):
         return path
-    try:
-        # 네이버 나눔고딕 공식 릴리즈(VER2.5)의 단일 TTF 직접 링크
-        url = "https://github.com/naver/nanumfont/releases/download/VER2.5/NanumGothic.ttf"
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        with open(path, "wb") as f:
-            f.write(r.content)
-        return path
-    except Exception:
-        return ""  # 실패 시 빈 문자열
-
-def try_register_font() -> str:
-    """
-    우선순위:
-    1) 실행 폴더의 NanumGothic.ttf (없으면 자동 다운로드)
-    2) ./fonts/NanumGothic.ttf
-    3) Windows 시스템 맑은고딕
-    4) 실패 시 Helvetica (한글 미지원)
-    """
-    candidates = []
-
-    # 1) 루트 자동 다운로드
-    dl_path = "./NanumGothic.ttf"
-    got = ensure_font(dl_path)
-    if got:
-        candidates.append(("NanumGothic", got))
-
-    # 2) fonts/ 하위
-    if os.path.exists("./fonts/NanumGothic.ttf"):
-        candidates.append(("NanumGothic", "./fonts/NanumGothic.ttf"))
-
-    # 3) 로컬 윈도우 경로(로컬 테스트용)
-    for p in ["C:\\Windows\\Fonts\\malgun.ttf", "C:/Windows/Fonts/malgun.ttf"]:
-        if os.path.exists(p):
-            candidates.append(("MalgunGothic", p))
-
-    for name, path in candidates:
+    for url in FONT_MIRRORS:
         try:
-            pdfmetrics.registerFont(TTFont(name, path))
-            registerFontFamily(name, normal=name, bold=name, italic=name, boldItalic=name)
-            return name
+            r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            if r.ok and len(r.content) > 100_000:  # 폰트 파일 최소 용량 체크
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(r.content)
+                return path
         except Exception:
             pass
+    return ""
+
+def try_register_font() -> str:
+    # 1) 로컬/동봉 폰트 우선
+    for p in FONT_CANDIDATE_LOCAL:
+        if os.path.exists(p):
+            try:
+                pdfmetrics.registerFont(TTFont("NanumGothic", p))
+                registerFontFamily("NanumGothic", normal="NanumGothic", bold="NanumGothic",
+                                   italic="NanumGothic", boldItalic="NanumGothic")
+                return "NanumGothic"
+            except Exception:
+                pass
+
+    # 2) 루트에 다운로드 시도
+    dl = ensure_font("./NanumGothic.ttf")
+    if dl:
+        try:
+            pdfmetrics.registerFont(TTFont("NanumGothic", dl))
+            registerFontFamily("NanumGothic", normal="NanumGothic", bold="NanumGothic",
+                               italic="NanumGothic", boldItalic="NanumGothic")
+            return "NanumGothic"
+        except Exception:
+            pass
+
+    # 3) 마지막 폴백(한글 미지원)
     return "Helvetica"
 
 BASE_FONT = try_register_font()
+
 ss = getSampleStyleSheet()
 styles = {
     "title": ParagraphStyle(name="title", parent=ss["Heading1"], fontName=BASE_FONT, fontSize=16, alignment=1),
@@ -127,10 +144,7 @@ styles = {
     "small_center": ParagraphStyle(name="small_center", parent=ss["Normal"], fontName=BASE_FONT, fontSize=9, alignment=1),
 }
 
-if BASE_FONT == "Helvetica":
-    st.error("PDF 한글 폰트를 임베드하지 못했습니다. 네트워크 또는 권한 문제일 수 있습니다.")
-else:
-    st.caption(f"PDF 폰트: {BASE_FONT} (임베드됨)")
+# ※ 요청에 따라 폰트 경고 표시 제거 (성공/실패 모두 조용히 동작)
 
 # ───────────────────────────────
 # 유틸
