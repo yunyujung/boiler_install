@@ -1,3 +1,12 @@
+import requests
+
+FONT_PATH = "./NanumGothic.ttf"
+if not os.path.exists(FONT_PATH):
+    url = "https://github.com/naver/nanumfont/releases/download/VER2.5/NanumGothic.ttf"
+    r = requests.get(url)
+    with open(FONT_PATH, "wb") as f:
+        f.write(r.content)
+        
 import os
 os.system("pip install streamlit reportlab pillow")
 
@@ -276,3 +285,4 @@ if st.session_state.pdf_bytes:
     st.success("✅ PDF 생성 완료! 아래 버튼으로 다운로드하세요.")
     st.download_button("⬇️ PDF 다운로드", st.session_state.pdf_bytes,
                        file_name=fname, mime="application/pdf", use_container_width=True)
+
